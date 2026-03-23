@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Football Dashboard</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 20px; }
+    h1 { margin-bottom: 10px; }
+    .tip-card { border: 1px solid #ccc; padding: 10px; margin: 10px 0; }
+    .circle { display: inline-block; margin: 5px; }
+    .favorite-btn { background: none; border: none; cursor: pointer; font-size: 1em; }
+    .favorite-btn.active { color: gold; font-weight: bold; }
+    #settingsPanel { border: 1px solid #ccc; padding: 10px; margin-top: 20px; }
+  </style>
+</head>
+<body>
+
+<h1>Football Dashboard</h1>
+
+<label for="leagueSelect">League:</label>
+<select id="leagueSelect" onchange="loadMatches()">
+  <option value="39">Premier League</option>
+  <option value="140">La Liga</option>
+  <option value="135">Serie A</option>
+  <option value="78">Bundesliga</option>
+</select>
+
+<label for="dateSelect">Match Date:</label>
+<input type="date" id="dateSelect" />
+
+<button onclick="changeDate(-1)">Previous Day</button>
+<button onclick="changeDate(1)">Next Day</button>
+<button onclick="resetToday()">Today</button>
+<button onclick="loadWeekend()">Weekend</button>
+
+<div id="matchesContainer"></div>
+
+<hr>
+
+<div id="favoritesContainer"></div>
+
+<hr>
+
+<h2>Settings</h2>
+<div id="settingsPanel">
+  <label>
+    <input type="checkbox" id="soundToggle" checked>
+    Enable Sound Alerts
+  </label><br>
+
+  <label>
+    <input type="checkbox" id="notificationToggle" checked>
+    Enable Browser Notifications
+  </label><br>
+
+  <label>
+    Refresh Interval (seconds):
+    <input type="number" id="refreshInterval" value="30" min="10" max="120">
+  </label><br>
+
+  <button onclick="saveSettings()">Save Settings</button>
+  <button onclick="clearFavorites()">Clear All Favorites</button>
+</div>
+
+<script>
+const BACKEND_URL = "http://localhost:3000";
+let favoriteTeams = new Set();
+let lastScores = {};
+let settings = { sound: true, notifications: true, refreshInterval: 30 };
+let pollingInterval;
+
+function formatDate(date) {
+  return date.toISOString().split("T")[0];
+}
+
+// Settings
+function loadSettings() {
+  const stored = localStorage.getItem("userSettings");
+  if (stored) settings = JSON.parse(stored);
+  document.getElementById("soundToggle").checked = settings.sound;
+  document.getElementById("notificationToggle").checked = settings.notifications;
+  document.getElementById("refreshInterval").value = settings.refreshInterval;
+}
+function saveSettings() {
+  settings.sound = document.getElementById("soundToggle").checked;
+  settings.notifications = document.getElementById("notificationToggle").checked;
+  settings.refreshInterval = parseInt(document.getElementById("refreshInterval").value, 10);
+  localStorage.setItem("userSettings", JSON.stringify(settings));
+  alert("Settings saved!");
+  resetPolling();
+}
+function resetPolling() {
+  if (pollingInterval) clearInterval(pollingInterval);
+  pollingInterval = setInterval(loadMatches, settings.refreshInterval * 1000);
+}
+
+// Favorites
+function loadFavoritesFromStorage() {
+  const stored = localStorage.getItem("favoriteTeams");
+  if (stored) favoriteTeams = new Set(JSON.parse(stored));
+}
+function saveFavoritesToStorage() {
+  localStorage.setItem("favoriteTeams", JSON.stringify(Array.from(favoriteTeams)));
+}
+function toggleFavorite(teamId, teamName) {
+  if (favoriteTeams.has(teamId)) favoriteTeams.delete(teamId);
+  else favoriteTeams.add(teamId);
+  saveFavoritesToStorage();
+  loadMatches();
+  loadFavorites();
+}
+function clearFavorites() {
+  favoriteTeams.clear();
+  saveFavoritesToStorage();
+  loadMatches();
+  loadFavorites();
+}
+function renderStarButton(teamId, teamName) {
+  const isFavorite = favoriteTeams.has(teamId);
+  return `<button class="favorite-btn ${isFavorite ? "active" : ""}" onclick="toggleFavorite(${teamId}, '${teamName}')">⭐ ${teamName}</button>`;
+}
+
+// Goal Alerts
+function showGoalNotification(teamName, score) {
+  if (settings.notifications && Notification.permission === "granted") {
+    new Notification("⚽ Goal Alert!", { body: `${teamName} just scored! Current score: ${score}` });
+  }
+  if (settings.sound) {
+    const audio = new Audio("cheer.mp3"); // place cheer.mp3 in your public folder
+    audio.play().catch(err => console.log("Audio playback blocked:", err));
+  }
+}
+function checkForGoals(liveData) {
+  for (const match of liveData.response) {
+    const fixtureId = match.fixture.id;
+    const homeScore = match.goals.home;
+    const awayScore = match.goals.away;
+    const prev = lastScores[fixtureId] || { home: 0, away: 0 };
+    if (homeScore > prev.home && favoriteTeams.has(match.teams.home.id)) {
+      showGoalNotification(match.teams.home.name, `${homeScore}-${awayScore}`);
+    }
+    if (awayScore > prev.away && favoriteTeams.has(match.teams.away.id)) {
+      showGoalNotification(match.teams.away.name, `${homeScore}-${awayScore}`);
+    }
+    lastScores[fixtureId] = { home: homeScore, away: awayScore };
+  }
+}
+
+// Navigation
+function changeDate(offset) {
+  const dateInput = document.getElementById("dateSelect");
+  const currentDate = new Date(dateInput.value);
+  currentDate.setDate(currentDate.getDate() + offset);
+  dateInput.value = formatDate(currentDate);
+  loadMatches();
+}
+function resetToday() {
+  const today = new Date();
+  document.getElementById("dateSelect").value = formatDate(today);
+  loadMatches();
+}
+async function loadWeekend() {
+  const leagueId = document.getElementById("leagueSelect").value;
+  const today = new Date();
+  const day = today.getDay();
+  const saturday = new Date(today);
+  saturday.setDate(today.getDate() + ((6 - day + 7) % 7));
+  const sunday = new Date(saturday);
+  sunday.setDate(saturday.getDate() + 1);
+  const weekendDates = [formatDate(saturday), formatDate(sunday)];
+  const container = document.getElementById("matchesContainer");
+  container.innerHTML = "";
+  for (const date of weekendDates) {
+    const response = await fetch(`${BACKEND_URL}/fixtures?league=${leagueId}&date=${date}`);
+    const data = await response.json();
+    const dayHeader = document.createElement("h2");
+    dayHeader.textContent = `Matches on ${date}`;
+    container.appendChild(dayHeader);
+    renderMatches(data.response, container);
+  }
+}
+
+// Rendering
+function renderMatches(matches, container) {
+  for (const match of matches) {
+    const card = document.createElement("div");
+    card.className = "tip-card";
+    card.innerHTML = `
+      <h3>
+        <img src="${match.teams.home.logo}" width="24"> ${match.teams.home.name} vs 
+        <img src="${match.teams.away.logo}" width="24"> ${match.teams.away.name}
+      </h3>
+      <p>Date: ${new Date(match.fixture.date).toLocaleString()}</p>
+      ${renderStarButton(match.teams.home.id, match.teams.home.name)}
+      ${renderStarButton(match.teams.away.id, match.teams.away.name)}
+    `;
+    container.appendChild(card);
+  }
+}
+
+async function loadMatches() {
+  const leagueId = document.getElementById("leagueSelect").value;
+  const date = document.getElementById("dateSelect").value || formatDate(new Date());
+  const response = await fetch(`${BACKEND_URL}/fixtures?league=${leagueId}&date=${date}`);
+  const data = await response.json();
+  const container = document.getElementById("matchesContainer");
+  container.innerHTML = "";
+  renderMatches(data.response, container);
+  checkForGoals(data);
+}
+
+async function loadFavorites() {
+  if (favoriteTeams.size === 0) {
+    document.getElementById("favoritesContainer").innerHTML = "<p>No favorites selected yet.</p>";
+    return;
+  }
+  const teamIds = Array.from(favoriteTeams).join(",");
+  const response = await fetch(`${BACKEND_URL}/favorites?teams=${teamIds}`);
+  const data = await response.json();
+  const container = document.getElementById("favoritesContainer");
+  container.innerHTML = "<h2>Favorites</h2>";
+  renderMatches(data.response, container);
+}
+
+// Initialize
+if (Notification.permission !== "granted") Notification.requestPermission();
+loadFavoritesFromStorage();
+loadSettings();
+document.getElementById("dateSelect").value = formatDate(new Date());
+loadMatches();
+loadFavorites();
+resetPolling();
+</script>
+
+</
